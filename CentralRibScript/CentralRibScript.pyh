@@ -1,0 +1,79 @@
+import adsk.core, adsk.fusion, traceback, math
+
+def run(context):
+    try:
+        app = adsk.core.Application.get()
+        ui = app.userInterface
+        design = app.activeProduct
+        root = design.rootComponent
+
+        def getParam(name):
+            param = design.userParameters.itemByName(name)
+            return param.value if param else None
+
+        # === Parameters ===
+        railHeight = getParam('MaxThickness')
+        ribThickness = getParam('CenterRibThickness')
+        boardLength = getParam('BoardLength')
+        deckPreset = int(getParam('DeckRockerPreset') or 0)
+        botPreset = int(getParam('BotRockerPreset') or 0)
+
+        if None in [railHeight, ribThickness, boardLength]:
+            ui.messageBox('❌ Missing required parameters.')
+            return
+
+        # === Rocker Offset Functions ===
+        def deckRockerOffset(xNorm):
+            if deckPreset == 0: return 0
+            elif deckPreset == 1: return (1 - xNorm**2) * (railHeight / 2)
+            elif deckPreset == 2: return -((1 - xNorm**2) * (railHeight / 4))
+            elif deckPreset == 3: return -railHeight / 4 if xNorm > 0.5 else 0
+            return 0
+
+        def bottomRockerOffset(xNorm):
+            if botPreset == 0: return 0
+            elif botPreset == 1: return (1 - xNorm**2) * (railHeight / 4)
+            elif botPreset == 2: return abs(xNorm - 0.5) * (railHeight / 2)
+            elif botPreset == 3: return math.sin(xNorm * math.pi * 2) * (railHeight / 12)
+            elif botPreset == 4: return 0 if xNorm < 0.3 or xNorm > 0.7 else -railHeight / 5
+            elif botPreset == 5: return math.sin(xNorm * math.pi) * (-railHeight / 3)
+            return 0
+
+        # === Generate Edge Geometry ===
+        numPoints = 16
+        halfWidth = ribThickness / 2
+        z = boardLength / 2  # Central position along board
+
+        topEdge = []
+        bottomEdge = []
+
+        for i in range(numPoints + 1):
+            t = i / numPoints
+            x = -halfWidth + (t * railHeight)
+            xNorm = t
+
+            yTop = (ribThickness / 2) + deckRockerOffset(xNorm)
+            yBot = -(ribThickness / 2) - bottomRockerOffset(xNorm)
+
+            # Note: -x flips orientation so deck faces correct direction in XZ plane
+            topEdge.append(adsk.core.Point3D.create(x, yTop, 0))
+            bottomEdge.insert(0, adsk.core.Point3D.create(x, yBot, 0))
+
+        # === Create Sketch ===
+        sketch = root.sketches.add(root.xZConstructionPlane)
+        sketch.name = 'CenterRib_Width_XZ'
+        curves = sketch.sketchCurves
+
+        outline = adsk.core.ObjectCollection.create()
+        for pt in topEdge:
+            outline.add(pt)
+        for pt in bottomEdge:
+            outline.add(pt)
+        outline.add(topEdge[0])  # Close loop
+
+        curves.sketchFittedSplines.add(outline)
+        ui.messageBox("✅ Center rib width sketch created successfully.")
+
+    except Exception as e:
+        if 'ui' in locals():
+            ui.messageBox(f'❌ Script error:\n{str(e)}\n\n{traceback.format_exc()}')
